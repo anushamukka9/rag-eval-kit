@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rag-eval-kit"
+version = "0.1.0"
+description = "Deterministic, dependency-free evaluation toolkit for RAG pipelines: faithfulness, context precision/recall, and answer relevancy from question/context/answer triples."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "Anusha Mukka" },
+]
+keywords = ["rag", "evaluation", "llm", "metrics", "retrieval"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://anushamukka.com"
+Repository = "https://github.com/anushamukka9/rag-eval-kit"
+
+[project.scripts]
+rag-eval-kit = "rag_eval_kit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
