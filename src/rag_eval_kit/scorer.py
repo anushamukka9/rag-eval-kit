@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 from typing import Dict, Iterable, List, Optional, Sequence
 
 from .metrics import get_metric
@@ -56,7 +57,7 @@ def score_dataset(
 
 
 def aggregate_scores(case_scores: Sequence[CaseScore]) -> Dict[str, Dict[str, float]]:
-    """Aggregate per-case metric scores into mean/min/max over the dataset."""
+    """Aggregate per-case metric scores into mean/std/min/max over the dataset."""
     if not case_scores:
         return {}
     per_metric: Dict[str, List[float]] = {}
@@ -68,6 +69,7 @@ def aggregate_scores(case_scores: Sequence[CaseScore]) -> Dict[str, Dict[str, fl
         values = per_metric[name]
         summary[name] = {
             "mean": round(sum(values) / len(values), 4),
+            "std": round(statistics.pstdev(values), 4),
             "min": round(min(values), 4),
             "max": round(max(values), 4),
             "n": len(values),
