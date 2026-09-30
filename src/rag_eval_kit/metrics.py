@@ -11,6 +11,7 @@ Metric functions take an :class:`~rag_eval_kit.models.EvalCase` and return a
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Callable, Dict, List, Set
 
@@ -228,5 +229,115 @@ def answer_relevancy(case: EvalCase) -> MetricResult:
             "question_tokens": len(question_tokens),
             "answer_tokens": len(answer_tokens),
             "shared_tokens": len(question_tokens & answer_tokens),
+        },
+    )
+
+
+# Chunk relevance grades for retrieval_ndcg: (similarity floor, grade).
+_RELEVANCE_GRADES = ((0.50, 3), (0.30, 2), (RELEVANCE_THRESHOLD, 1))
+
+
+@register_metric("retrieval_ndcg")
+def retrieval_ndcg(case: EvalCase) -> MetricResult:
+    """NDCG of the retrieved chunk ranking: are the best chunks ranked first?
+
+    Each chunk gets a relevance grade (0-3) from its content-token Jaccard
+    similarity with the reference ``expected`` answer (or the question when no
+    reference is given). The score is DCG over the retrieved order divided by
+    the DCG of the ideal ordering. Scores 1.0 when nothing is retrievable to
+    mis-rank; 0.0 when no chunks were retrieved at all.
+    """
+    if not case.contexts:
+        return MetricResult("retrieval_ndcg", 0.0, {"note": "no contexts retrieved"})
+    reference_tokens = content_tokens(case.expected if case.expected else case.question)
+    grades = []
+    for chunk in case.contexts:
+        sim = jaccard(reference_tokens, content_tokens(chunk))
+        grade = 0
+        for floor, g in _RELEVANCE_GRADES:
+            if sim >= floor:
+                grade = g
+                break
+        grades.append({"similarity": round(sim, 4), "grade": grade})
+
+    def _dcg(ordered_grades):
+        return sum((2.0 ** g - 1) / math.log2(i + 2) for i, g in enumerate(ordered_grades))
+
+    retrieved = [g["grade"] for g in grades]
+    dcg = _dcg(retrieved)
+    idcg = _dcg(sorted(retrieved, reverse=True))
+    if idcg == 0:
+        return MetricResult(
+            "retrieval_ndcg", 1.0, {"grades": grades, "note": "no relevant chunks to rank"}
+        )
+    return MetricResult(
+        "retrieval_ndcg",
+        dcg / idcg,
+        {"grades": grades, "dcg": round(dcg, 4), "idcg": round(idcg, 4)},
+    )
+
+
+@register_metric("context_utilization")
+def context_utilization(case: EvalCase) -> MetricResult:
+    """Fraction of retrieved chunks that support at least one answer claim.
+
+    Complements ``context_precision`` (chunks relevant to the question) by
+    asking whether the generator actually used what was retrieved. A chunk
+    *supports* a claim when their content-token Jaccard similarity meets
+    ``SUPPORT_THRESHOLD``. Low utilization with high precision means the
+    generator is ignoring good retrieval.
+    """
+    if not case.contexts:
+        return MetricResult("context_utilization", 0.0, {"note": "no contexts retrieved"})
+    claims = sentences(case.answer)
+    if not claims:
+        return MetricResult("context_utilization", 0.0, {"note": "empty answer"})
+    chunk_sets = [content_tokens(c) for c in case.contexts]
+    verdicts = []
+    for i, chunk_set in enumerate(chunk_sets):
+        supporting = sum(
+            1
+            for claim in claims
+            if jaccard(content_tokens(claim), chunk_set) >= SUPPORT_THRESHOLD
+        )
+        verdicts.append(
+            {"chunk_index": i, "used": supporting > 0, "supporting_claims": supporting}
+        )
+    used = sum(1 for v in verdicts if v["used"])
+    return MetricResult(
+        "context_utilization",
+        used / len(verdicts),
+        {"chunks": verdicts, "used": used, "total": len(verdicts)},
+    )
+
+
+@register_metric("answer_completeness")
+def answer_completeness(case: EvalCase) -> MetricResult:
+    """Fraction of the reference answer's content covered by the generated answer.
+
+    Requires the ``expected`` reference answer; scores 0.0 with a note when it
+    is missing. A need token counts as covered when it appears in the answer's
+    content tokens. Penalizes answers that address the question but omit key
+    facts from the reference.
+    """
+    if not case.expected:
+        return MetricResult(
+            "answer_completeness", 0.0, {"note": "no expected answer provided"}
+        )
+    need = content_tokens(case.expected)
+    if not need:
+        return MetricResult(
+            "answer_completeness", 0.0, {"note": "empty expected answer"}
+        )
+    have = content_tokens(case.answer)
+    covered = need & have
+    return MetricResult(
+        "answer_completeness",
+        len(covered) / len(need),
+        {
+            "covered": sorted(covered),
+            "missing": sorted(need - covered),
+            "covered_count": len(covered),
+            "need_count": len(need),
         },
     )
