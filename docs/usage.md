@@ -33,12 +33,27 @@ to the question text.
 | `faithfulness` | Fraction of answer sentences supported by at least one context chunk | no |
 | `context_precision` | Fraction of retrieved chunks relevant to the question | no (uses `expected` as the relevance reference when present) |
 | `context_recall` | Fraction of the information need covered by the retrieved chunks | optional (improves it) |
+| `context_utilization` | Fraction of retrieved chunks the answer actually draws on | no |
+| `retrieval_ndcg` | NDCG of the chunk ranking: are the most relevant chunks first? | optional (improves it) |
 | `answer_relevancy` | How directly the answer addresses the question | no |
+| `answer_completeness` | Fraction of the reference answer's content present in the answer | yes |
 
 All metrics are deterministic lexical heuristics over content tokens (stopwords
 removed). They are reference-free: they need no ground-truth answers, no LLM
 judge, and no network. That makes them cheap, reproducible, and CI-friendly —
 a good first pass before (or alongside) expensive judge-based evaluation.
+
+A few notes on the newer ones:
+
+- `context_utilization` complements `context_precision`: precision asks whether
+  the chunks are relevant to the question, utilization asks whether the
+  generator used them. High precision with low utilization means the generator
+  is ignoring good retrieval.
+- `retrieval_ndcg` grades each chunk 0-3 by its similarity to the reference
+  (or question) and scores the ranking against the ideal order. It is 1.0 for
+  a perfect ranking and 0.0 when nothing was retrieved.
+- `answer_completeness` needs `expected`; without it the metric scores 0.0
+  with a note rather than guessing.
 
 Thresholds live in `rag_eval_kit.metrics` as `SUPPORT_THRESHOLD` (default 0.30)
 and `RELEVANCE_THRESHOLD` (default 0.15); adjust them to your corpus if the
@@ -52,13 +67,23 @@ Eval sets are JSONL files, one `EvalCase` per line:
 {"id": "q1", "question": "...", "contexts": ["..."], "answer": "...", "expected": "..."}
 ```
 
+Validate the format before scoring (catches bad JSON, missing fields, empty
+contexts, and duplicate ids):
+
+```bash
+rag-eval-kit validate eval.jsonl
+```
+
 ```python
-from rag_eval_kit import load_jsonl, score_dataset, aggregate_scores
+from rag_eval_kit import (
+    load_jsonl, score_dataset, aggregate_scores, validate_eval_set,
+)
 from rag_eval_kit.report import write_json_report, write_markdown_report
 
+issues = validate_eval_set("eval.jsonl")   # [] when the file is clean
 cases = load_jsonl("eval.jsonl")
 scored = score_dataset(cases)                    # or score_dataset(cases, ["faithfulness"])
-summary = aggregate_scores(scored)               # per-metric mean/min/max
+summary = aggregate_scores(scored)               # per-metric mean/std/min/max
 
 write_json_report(scored, summary, "report.json")
 write_markdown_report(scored, summary, "report.md")
@@ -87,6 +112,9 @@ Registered metrics automatically run in `score_dataset`, appear in
 ## CLI
 
 ```bash
+# Validate the eval set format
+rag-eval-kit validate eval.jsonl
+
 # List metrics
 rag-eval-kit metrics
 
@@ -104,13 +132,14 @@ rag-eval-kit score eval.jsonl --output report --format both
 rag-eval-kit score eval.jsonl --output report.json --fail-under 0.7
 ```
 
-Exit codes: `0` success, `1` a `--fail-under` threshold tripped, `2` usage or
-input errors.
+Exit codes: `0` success, `1` a `--fail-under` threshold tripped or validation
+found issues, `2` usage or input errors.
 
 ## Report formats
 
-- **JSON** (`report.json`): `summary` (per-metric mean/min/max), `n_cases`,
+- **JSON** (`report.json`): `summary` (per-metric mean/std/min/max), `n_cases`,
   and per-case scores with each metric's `detail` payload — machine-readable
   for dashboards and regression tracking.
-- **Markdown** (`report.md`): summary table plus a per-case score table —
+- **Markdown** (`report.md`): summary table plus a per-case score table and a
+  "Needs attention" section listing every case with a metric below 0.5 —
   readable in a PR or pasted into a doc.
