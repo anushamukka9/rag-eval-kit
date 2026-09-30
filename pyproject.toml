@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rag-eval-kit"
-version = "0.1.0"
-description = "Deterministic, dependency-free evaluation toolkit for RAG pipelines: faithfulness, context precision/recall, and answer relevancy from question/context/answer triples."
+version = "0.2.0"
+description = "Deterministic, dependency-free evaluation toolkit for RAG pipelines: faithfulness, context precision/recall/utilization, answer relevancy/completeness, and retrieval NDCG from question/context/answer triples."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
