@@ -2,6 +2,7 @@
 
 Subcommands:
     score    Score a JSONL eval set and write a summary report.
+    validate Check a JSONL eval set for format problems.
     metrics  List the registered metrics.
 """
 
@@ -14,6 +15,7 @@ from . import __version__
 from .metrics import list_metrics
 from .report import write_json_report, write_markdown_report
 from .scorer import aggregate_scores, load_jsonl, score_dataset
+from .validation import validate_eval_set
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -50,6 +52,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("metrics", help="List the registered metrics.")
+
+    p_validate = sub.add_parser(
+        "validate", help="Check a JSONL eval set for format problems."
+    )
+    p_validate.add_argument("input", help="Path to the JSONL eval set.")
     return parser
 
 
@@ -95,6 +102,21 @@ def _cmd_score(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_validate(args: argparse.Namespace) -> int:
+    try:
+        issues = validate_eval_set(args.input)
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if issues:
+        for issue in issues:
+            print(issue)
+        print(f"{len(issues)} issue(s) found", file=sys.stderr)
+        return 1
+    print("eval set is clean")
+    return 0
+
+
 def _cmd_metrics(_args: argparse.Namespace) -> int:
     for name in sorted(list_metrics()):
         print(name)
@@ -105,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "score":
         return _cmd_score(args)
+    if args.command == "validate":
+        return _cmd_validate(args)
     if args.command == "metrics":
         return _cmd_metrics(args)
     raise AssertionError(f"unhandled command {args.command!r}")
