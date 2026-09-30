@@ -9,15 +9,20 @@ import pytest
 from rag_eval_kit import (
     EvalCase,
     aggregate_scores,
+    answer_completeness,
     answer_relevancy,
     context_precision,
     context_recall,
+    context_utilization,
     faithfulness,
     list_metrics,
     load_jsonl,
     register_metric,
+    retrieval_ndcg,
     score_case,
     score_dataset,
+    validate_cases,
+    validate_eval_set,
 )
 from rag_eval_kit.cli import main as cli_main
 from rag_eval_kit.report import write_json_report, write_markdown_report
@@ -248,3 +253,169 @@ def test_console_script_entrypoint(tmp_path):
     assert proc.returncode == 0
     assert "faithfulness" in proc.stdout
     assert input_path  # keeps the fixture in play
+
+
+# ---------------------------------------------------------------------------
+# New metrics: retrieval_ndcg, context_utilization, answer_completeness
+# ---------------------------------------------------------------------------
+
+
+def ndcg_case(contexts):
+    return EvalCase(
+        id="ndcg-1",
+        question="What drives photosynthesis in plants?",
+        contexts=contexts,
+        answer="Sunlight drives photosynthesis.",
+        expected=(
+            "Photosynthesis in plants is driven by sunlight captured by "
+            "chlorophyll in the leaves."
+        ),
+    )
+
+
+RELEVANT_CHUNK = (
+    "Photosynthesis in plants is driven by sunlight captured by chlorophyll "
+    "in the leaves, converting carbon dioxide and water into glucose."
+)
+DISTRACTOR_CHUNK = "The best pizza toppings include pepperoni and mushrooms."
+
+
+def test_retrieval_ndcg_perfect_ranking_scores_one():
+    case = ndcg_case([RELEVANT_CHUNK, DISTRACTOR_CHUNK])
+    result = retrieval_ndcg(case)
+    assert result.score == pytest.approx(1.0)
+    grades = [g["grade"] for g in result.detail["grades"]]
+    assert grades[0] > grades[1]
+
+
+def test_retrieval_ndcg_worst_ranking_scores_below_one():
+    case = ndcg_case([DISTRACTOR_CHUNK, RELEVANT_CHUNK])
+    result = retrieval_ndcg(case)
+    assert result.score < 1.0
+    assert result.score > 0.0
+
+
+def test_retrieval_ndcg_empty_contexts_scores_zero():
+    case = ndcg_case([])
+    result = retrieval_ndcg(case)
+    assert result.score == 0.0
+    assert "note" in result.detail
+
+
+def test_context_utilization_counts_used_chunks():
+    result = context_utilization(good_case())
+    # good_case has 3 chunks; the pizza chunk supports no answer claim.
+    assert result.score == pytest.approx(2 / 3)
+    assert result.detail["used"] == 2
+
+
+def test_context_utilization_empty_answer_scores_zero():
+    case = good_case()
+    case.answer = ""
+    assert context_utilization(case).score == 0.0
+
+
+def test_context_utilization_empty_contexts_scores_zero():
+    case = good_case()
+    case.contexts = []
+    assert context_utilization(case).score == 0.0
+
+
+def test_answer_completeness_covers_expected_tokens():
+    result = answer_completeness(good_case())
+    assert result.score > 0.5
+    assert result.detail["covered_count"] > 0
+
+
+def test_answer_completeness_missing_expected_scores_zero_with_note():
+    case = good_case()
+    case.expected = None
+    result = answer_completeness(case)
+    assert result.score == 0.0
+    assert "no expected answer" in result.detail["note"]
+
+
+def test_answer_completeness_partial_answer_scores_partial():
+    case = good_case()
+    case.answer = "Sunlight is involved."
+    result = answer_completeness(case)
+    assert 0.0 < result.score < 1.0
+    assert result.detail["missing"]
+
+
+# ---------------------------------------------------------------------------
+# Aggregates, reports, validation
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_scores_include_std():
+    scored = score_dataset([good_case(), bad_case()])
+    summary = aggregate_scores(scored)
+    assert summary["faithfulness"]["std"] >= 0.0
+    stats = summary["faithfulness"]
+    assert stats["min"] <= stats["mean"] <= stats["max"]
+
+
+def test_markdown_report_has_std_and_attention_section(tmp_path):
+    scored = score_dataset([good_case(), bad_case()])
+    summary = aggregate_scores(scored)
+    path = write_markdown_report(scored, summary, str(tmp_path / "report.md"))
+    md = open(path).read()
+    assert "| Std |" in md
+    assert "## Needs attention" in md
+    assert "bad-1" in md  # the bad case scores below 0.5 on several metrics
+
+
+def test_validate_eval_set_clean(tmp_path):
+    path = _write_eval_set(tmp_path)
+    assert validate_eval_set(path) == []
+
+
+def test_validate_eval_set_flags_problems(tmp_path):
+    path = tmp_path / "dirty.jsonl"
+    rows = [
+        '{"question": "q", "contexts": [], "answer": "a", "id": "dup"}',
+        '{"question": "q2", "contexts": ["c"], "answer": "a2", "id": "dup"}',
+        '{"question": "", "contexts": ["c"], "answer": "a3"}',
+        "not json at all",
+        '{"question": "q4", "answer": "a4"}',
+    ]
+    path.write_text("\n".join(rows) + "\n")
+    issues = validate_eval_set(path)
+    joined = "\n".join(issues)
+    assert "contexts is empty" in joined
+    assert "duplicate id 'dup'" in joined
+    assert "question is empty" in joined
+    assert "invalid JSON" in joined
+    assert "missing required field 'contexts'" in joined
+
+
+def test_validate_cases_row_numbers():
+    rows = [
+        {"question": "q", "contexts": ["c"], "answer": "a"},
+        {"question": "q"},
+    ]
+    issues = validate_cases(rows)
+    assert len(issues) == 2
+    assert all(i.startswith("row 2:") for i in issues)
+
+
+def test_cli_validate_clean_and_dirty(tmp_path, capsys):
+    clean = _write_eval_set(tmp_path)
+    assert cli_main(["validate", clean]) == 0
+    assert "clean" in capsys.readouterr().out
+
+    dirty = tmp_path / "dirty.jsonl"
+    dirty.write_text('{"question": "q"}\n')
+    assert cli_main(["validate", str(dirty)]) == 1
+
+
+def test_cli_validate_missing_file(tmp_path, capsys):
+    assert cli_main(["validate", str(tmp_path / "nope.jsonl")]) == 2
+
+
+def test_cli_metrics_lists_new_metrics(capsys):
+    assert cli_main(["metrics"]) == 0
+    out = capsys.readouterr().out
+    for name in ("retrieval_ndcg", "context_utilization", "answer_completeness"):
+        assert name in out
